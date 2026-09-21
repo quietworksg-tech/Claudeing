@@ -1,0 +1,20 @@
+# Continuous watcher. Install to /etc/systemd/system/ (or ~/.config/systemd/user/),
+# then:  systemctl --user enable --now flighttracker
+[Unit]
+Description=Flight price tracker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+Environment=FLIGHTTRACKER_DB=%h/.flighttracker/tracker.db
+Environment=FLIGHTTRACKER_TZ=Europe/London
+# Environment=FLIGHTTRACKER_WEBHOOK_URL=https://hooks.slack.com/services/...
+# Environment=AMADEUS_CLIENT_ID=...
+# Environment=AMADEUS_CLIENT_SECRET=...
+ExecStart=/usr/bin/env flighttracker -v watch
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=default.target

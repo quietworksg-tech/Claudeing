@@ -1,0 +1,6 @@
+# Alternative to `watch`: let cron drive the sweeps. Each run polls only the
+# routes whose own interval is due, so a tight cron schedule is safe.
+*/15 * * * *  FLIGHTTRACKER_DB=$HOME/.flighttracker/tracker.db flighttracker check >> $HOME/.flighttracker/check.log 2>&1
+
+# Rebuild the HTML report every morning at 07:00.
+0 7 * * *     FLIGHTTRACKER_DB=$HOME/.flighttracker/tracker.db flighttracker report --html $HOME/.flighttracker/report.html --quiet

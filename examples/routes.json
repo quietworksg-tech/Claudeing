@@ -1,0 +1,34 @@
+[
+  {
+    "route": "JFK-LHR",
+    "depart_date": "2026-12-10",
+    "return_date": "2026-12-20",
+    "threshold": 650,
+    "interval_minutes": 30,
+    "cabin": "ECONOMY",
+    "currency": "USD",
+    "max_stops": 1,
+    "provider": "mock",
+    "label": "Christmas in London"
+  },
+  {
+    "route": "SFO-NRT",
+    "depart_date": "2027-01-15",
+    "return_date": "2027-01-29",
+    "threshold": 780,
+    "interval_minutes": 60,
+    "depart_flex_days": 2,
+    "return_flex_days": 2,
+    "provider": "mock",
+    "label": "Tokyo trip"
+  },
+  {
+    "route": "LHR-BCN",
+    "depart_date": "2026-11-06",
+    "return_date": "2026-11-09",
+    "threshold": 120,
+    "interval_minutes": 120,
+    "currency": "GBP",
+    "provider": "mock"
+  }
+]

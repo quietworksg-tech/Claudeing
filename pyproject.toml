@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "flighttracker"
+version = "0.1.0"
+description = "Track round-trip flight prices across multiple routes and get told when to book."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+dependencies = []          # standard library only
+
+[project.scripts]
+flighttracker = "flighttracker.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["flighttracker*"]

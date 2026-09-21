@@ -1,0 +1,4 @@
+route,depart_date,return_date,threshold,interval_minutes,currency,label
+JFK-LHR,2026-12-10,2026-12-20,650,30,USD,Christmas in London
+SFO-NRT,2027-01-15,2027-01-29,780,60,USD,Tokyo trip
+LHR-BCN,2026-11-06,2026-11-09,120,120,GBP,
