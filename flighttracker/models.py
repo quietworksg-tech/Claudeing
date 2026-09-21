@@ -26,6 +26,11 @@ class Route:
     destination: str
     depart_date: date
     return_date: date | None = None
+    #: set either to fly the inbound leg through different airports than the
+    #: outbound one (open-jaw), e.g. out SIN->NRT, home KIX->SIN. Left as None
+    #: for a normal round trip - resolved to destination/origin in __post_init__.
+    return_origin: str | None = None
+    return_destination: str | None = None
     adults: int = 1
     cabin: str = "ECONOMY"
     currency: str = "USD"
@@ -47,15 +52,34 @@ class Route:
         self.depart_date = parse_date(self.depart_date)
         if self.return_date is not None:
             self.return_date = parse_date(self.return_date)
+            # Always store concrete values for a round trip's return leg, never
+            # None, so "no override" and "override back to the default" are the
+            # same row - and so the DB's uniqueness check never has to reason
+            # about NULL vs NULL not matching itself.
+            self.return_origin = (self.return_origin or self.destination).strip().upper()
+            self.return_destination = (self.return_destination or self.origin).strip().upper()
+        else:
+            self.return_origin = None
+            self.return_destination = None
 
     @property
     def is_round_trip(self) -> bool:
         return self.return_date is not None
 
     @property
+    def is_open_jaw(self) -> bool:
+        """True when the inbound leg does not simply retrace the outbound one."""
+        return self.is_round_trip and (
+            self.return_origin != self.destination or self.return_destination != self.origin
+        )
+
+    @property
     def name(self) -> str:
         if self.label:
             return self.label
+        if self.is_open_jaw:
+            legs = f"{self.origin}→{self.destination} / {self.return_origin}→{self.return_destination}"
+            return f"{legs}  {self.depart_date}→{self.return_date}"
         leg = f"{self.origin}-{self.destination}"
         if self.return_date:
             return f"{leg} {self.depart_date}/{self.return_date}"

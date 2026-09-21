@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flighttracker"
-version = "0.1.0"
+version = "0.2.0"
 description = "Track round-trip flight prices across multiple routes and get told when to book."
 readme = "README.md"
 requires-python = ">=3.11"

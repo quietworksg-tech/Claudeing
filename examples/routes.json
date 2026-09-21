@@ -30,5 +30,15 @@
     "interval_minutes": 120,
     "currency": "GBP",
     "provider": "mock"
+  },
+  {
+    "route": "SIN-NRT",
+    "depart_date": "2026-11-06",
+    "return_date": "2026-11-15",
+    "return_origin": "KIX",
+    "threshold": 900,
+    "interval_minutes": 60,
+    "provider": "mock",
+    "label": "Singapore, open jaw via Osaka"
   }
 ]

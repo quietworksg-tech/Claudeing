@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import date
 from typing import Any
 
 from flighttracker.models import Offer, Route
@@ -24,6 +25,44 @@ class Provider:
 
     def search(self, route: Route) -> list[Offer]:
         raise NotImplementedError
+
+    def _search_pair(self, route: Route, depart: date, back: date | None) -> list[Offer]:
+        """Search exactly one concrete date pair for one origin/destination.
+
+        Used both for a route's own flex-date loop and, via `_search_open_jaw`,
+        for each leg of an open-jaw itinerary. `route` carries everything except
+        the dates actually queried (`depart`/`back`), so subclasses must use
+        the explicit arguments rather than `route.depart_date`/`return_date`.
+        """
+        raise NotImplementedError
+
+    def _search_open_jaw(self, route: Route) -> list[Offer]:
+        """Default open-jaw handling: price each leg as a one-way and combine.
+
+        See `flighttracker.openjaw` for what that approximation means. Any
+        provider whose `search()` delegates here for open-jaw routes must
+        implement `_search_pair`.
+        """
+        from flighttracker.openjaw import combine_legs, leg_route
+
+        offers: list[Offer] = []
+        errors: list[str] = []
+        for depart, back in route.date_pairs():
+            if back is None:
+                continue
+            try:
+                out_offers = self._search_pair(leg_route(route, route.origin, route.destination), depart, None)
+                in_offers = self._search_pair(
+                    leg_route(route, route.return_origin, route.return_destination), back, None
+                )
+                offers.extend(combine_legs(out_offers, in_offers, depart, back))
+            except ProviderError as exc:
+                errors.append(f"{depart}/{back}: {exc}")
+            if self.min_interval_seconds:
+                time.sleep(self.min_interval_seconds)
+        if not offers and errors:
+            raise ProviderError("; ".join(errors[:3]))
+        return offers
 
     def cheapest(self, route: Route) -> Offer | None:
         offers = [o for o in self.search(route) if o.price > 0]

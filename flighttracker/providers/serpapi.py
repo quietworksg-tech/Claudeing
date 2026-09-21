@@ -76,6 +76,10 @@ class SerpApiProvider(Provider):
         return offers
 
     def search(self, route: Route) -> list[Offer]:
+        if route.is_open_jaw:
+            # Google Flights' one-search-per-itinerary model doesn't expose a
+            # combined open-jaw fare here; priced as two one-ways (openjaw.py).
+            return self._search_open_jaw(route)
         offers: list[Offer] = []
         errors: list[str] = []
         for depart, back in route.date_pairs():

@@ -15,8 +15,9 @@ from flighttracker import analysis, charts, cli, report
 from flighttracker.config import Settings
 from flighttracker.db import Database
 from flighttracker.engine import Engine
-from flighttracker.models import Quote, Route, utcnow
+from flighttracker.models import Offer, Quote, Route, utcnow
 from flighttracker.notify import Notifier, format_alert
+from flighttracker.providers.base import Provider, ProviderError
 from flighttracker.providers.mock import MockProvider
 
 TOMORROW = date.today() + timedelta(days=120)
@@ -524,3 +525,168 @@ class TestCli(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------- open jaw
+
+class TestOpenJaw(unittest.TestCase):
+    def test_symmetric_round_trip_is_not_open_jaw(self):
+        r = Route("SIN", "NRT", TOMORROW, RETURN)
+        self.assertFalse(r.is_open_jaw)
+        self.assertEqual((r.return_origin, r.return_destination), ("NRT", "SIN"))
+
+    def test_explicit_different_return_leg_is_open_jaw(self):
+        r = Route("SIN", "NRT", TOMORROW, RETURN, return_origin="KIX")
+        self.assertTrue(r.is_open_jaw)
+        self.assertEqual(r.return_destination, "SIN")           # defaults to origin
+
+    def test_one_way_has_no_return_leg_fields(self):
+        r = Route("SIN", "NRT", TOMORROW)
+        self.assertFalse(r.is_open_jaw)
+        self.assertIsNone(r.return_origin)
+        self.assertIsNone(r.return_destination)
+
+    def test_name_shows_both_legs_for_open_jaw(self):
+        r = Route("SIN", "NRT", TOMORROW, RETURN, return_origin="KIX")
+        self.assertIn("KIX", r.name)
+        self.assertIn("NRT", r.name)
+
+    def test_mock_prices_open_jaw_as_two_legs_summed(self):
+        provider = MockProvider()
+        when = datetime(2026, 5, 1, 12, 0, tzinfo=timezone.utc)
+        open_jaw = Route("SIN", "NRT", date(2026, 6, 1), date(2026, 6, 11), return_origin="KIX")
+        out_leg = Route("SIN", "NRT", date(2026, 6, 1))
+        in_leg = Route("KIX", "SIN", date(2026, 6, 11))
+        offers = provider.offers_at(open_jaw, when)
+        self.assertTrue(offers)
+        cheapest = min(o.price for o in offers)
+        out_cheapest = min(o.price for o in provider.offers_at(out_leg, when))
+        in_cheapest = min(o.price for o in provider.offers_at(in_leg, when))
+        self.assertAlmostEqual(cheapest, out_cheapest + in_cheapest, delta=0.02)
+
+    def test_open_jaw_offer_reports_dates_and_combined_stops(self):
+        provider = MockProvider()
+        route = Route("SIN", "NRT", date(2026, 6, 1), date(2026, 6, 11), return_origin="KIX")
+        offer = provider.cheapest(route)
+        self.assertEqual(offer.depart_date, date(2026, 6, 1))
+        self.assertEqual(offer.return_date, date(2026, 6, 11))
+        self.assertGreaterEqual(offer.stops, 0)
+
+    def test_combine_legs_caps_the_cross_product(self):
+        from flighttracker.openjaw import combine_legs
+        out_offers = [Offer(price=100 + i, currency="USD", depart_date=TOMORROW) for i in range(10)]
+        in_offers = [Offer(price=200 + i, currency="USD", depart_date=RETURN) for i in range(10)]
+        combined = combine_legs(out_offers, in_offers, TOMORROW, RETURN, cap=3)
+        self.assertEqual(len(combined), 9)
+        self.assertAlmostEqual(min(o.price for o in combined), 100 + 200, delta=0.01)
+
+    def test_db_round_trips_open_jaw_fields(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "t.db")
+            saved = db.add_route(Route("SIN", "NRT", TOMORROW, RETURN, return_origin="KIX"))
+            self.assertTrue(saved.is_open_jaw)
+            fetched = db.get_route(saved.id)
+            self.assertEqual(fetched.return_origin, "KIX")
+            self.assertTrue(fetched.is_open_jaw)
+
+    def test_symmetric_and_open_jaw_are_different_db_rows(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "t.db")
+            plain = db.add_route(Route("SIN", "NRT", TOMORROW, RETURN))
+            jaw = db.add_route(Route("SIN", "NRT", TOMORROW, RETURN, return_origin="KIX"))
+            self.assertNotEqual(plain.id, jaw.id)
+            self.assertEqual(len(db.list_routes()), 2)
+
+    def test_re_adding_the_same_open_jaw_updates_not_duplicates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = Database(Path(tmp) / "t.db")
+            first = db.add_route(Route("SIN", "NRT", TOMORROW, RETURN, return_origin="KIX", threshold=900))
+            second = db.add_route(Route("SIN", "NRT", TOMORROW, RETURN, return_origin="KIX", threshold=650))
+            self.assertEqual(first.id, second.id)
+            self.assertEqual(second.threshold, 650)
+            self.assertEqual(len(db.list_routes()), 1)
+
+    def test_base_search_open_jaw_combines_two_leg_searches(self):
+        class StubProvider(Provider):
+            name = "stub"
+
+            def _search_pair(self, route, depart, back):
+                if route.destination == "NRT":
+                    return [Offer(price=500, currency="USD", depart_date=depart, carrier="AA")]
+                return [Offer(price=300, currency="USD", depart_date=depart, carrier="BB")]
+
+        route = Route("SIN", "NRT", date(2026, 6, 1), date(2026, 6, 11), return_origin="KIX")
+        offers = StubProvider()._search_open_jaw(route)
+        self.assertEqual(len(offers), 1)
+        self.assertAlmostEqual(offers[0].price, 800)
+        self.assertEqual(offers[0].carrier, "AA/BB")
+
+    def test_base_search_open_jaw_surfaces_leg_errors(self):
+        class FailingProvider(Provider):
+            name = "failing"
+
+            def _search_pair(self, route, depart, back):
+                raise ProviderError("boom")
+
+        route = Route("SIN", "NRT", date(2026, 6, 1), date(2026, 6, 11), return_origin="KIX")
+        with self.assertRaises(ProviderError):
+            FailingProvider()._search_open_jaw(route)
+
+    def test_amadeus_and_serpapi_dispatch_open_jaw_without_crashing_on_missing_creds(self):
+        from flighttracker.providers.amadeus import AmadeusProvider
+        from flighttracker.providers.serpapi import SerpApiProvider
+
+        route = Route("SIN", "NRT", date(2026, 6, 1), date(2026, 6, 11), return_origin="KIX",
+                      provider="amadeus")
+        with self.assertRaises(Exception):
+            AmadeusProvider(client_id="", client_secret="").search(route)
+        route2 = Route("SIN", "NRT", date(2026, 6, 1), date(2026, 6, 11), return_origin="KIX",
+                       provider="serpapi")
+        with self.assertRaises(Exception):
+            SerpApiProvider(api_key="").search(route2)
+
+
+class TestOpenJawCli(unittest.TestCase):
+    def setUp(self):
+        self._dir = tempfile.TemporaryDirectory()
+        self.dbfile = str(Path(self._dir.name) / "cli.db")
+
+    def tearDown(self):
+        self._dir.cleanup()
+
+    def run_cli(self, *args) -> tuple[int, str]:
+        buf = io.StringIO()
+        with redirect_stdout(buf), redirect_stderr(io.StringIO()):
+            code = cli.main(["--db", self.dbfile, *args])
+        return code, buf.getvalue()
+
+    def test_add_with_return_from_creates_open_jaw(self):
+        code, out = self.run_cli("add", "SIN-NRT", "--depart", TOMORROW.isoformat(),
+                                 "--return", RETURN.isoformat(), "--return-from", "KIX")
+        self.assertEqual(code, 0)
+        self.assertIn("open jaw", out)
+
+    def test_return_from_without_return_date_is_rejected(self):
+        code, _ = self.run_cli("add", "SIN-NRT", "--depart", TOMORROW.isoformat(),
+                               "--return-from", "KIX")
+        self.assertEqual(code, 2)
+
+    def test_combo_generates_round_trips_and_open_jaw(self):
+        code, out = self.run_cli("combo", "SIN", "--to", "NRT,HND,KIX",
+                                 "--depart", TOMORROW.isoformat(), "--return", RETURN.isoformat())
+        self.assertEqual(code, 0)
+        self.assertIn("3 round trip, 6 open-jaw", out)
+        _, listing = self.run_cli("list")
+        self.assertEqual(listing.count("mock"), 9)
+
+    def test_combo_no_open_jaw_flag_skips_mixed_pairs(self):
+        code, out = self.run_cli("combo", "SIN", "--to", "NRT,HND,KIX", "--depart",
+                                 TOMORROW.isoformat(), "--return", RETURN.isoformat(),
+                                 "--no-open-jaw")
+        self.assertEqual(code, 0)
+        self.assertIn("3 round trip, 0 open-jaw", out)
+
+    def test_combo_needs_at_least_two_destinations_for_open_jaw(self):
+        code, _ = self.run_cli("combo", "SIN", "--to", "NRT", "--depart",
+                               TOMORROW.isoformat(), "--return", RETURN.isoformat())
+        self.assertEqual(code, 2)

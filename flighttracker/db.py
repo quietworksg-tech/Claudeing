@@ -19,6 +19,8 @@ CREATE TABLE IF NOT EXISTS routes (
     destination        TEXT NOT NULL,
     depart_date        TEXT NOT NULL,
     return_date        TEXT,
+    return_origin      TEXT,
+    return_destination TEXT,
     adults             INTEGER NOT NULL DEFAULT 1,
     cabin              TEXT NOT NULL DEFAULT 'ECONOMY',
     currency           TEXT NOT NULL DEFAULT 'USD',
@@ -31,7 +33,8 @@ CREATE TABLE IF NOT EXISTS routes (
     enabled            INTEGER NOT NULL DEFAULT 1,
     label              TEXT,
     created_at         TEXT NOT NULL,
-    UNIQUE (origin, destination, depart_date, return_date, adults, cabin, provider)
+    UNIQUE (origin, destination, depart_date, return_date, return_origin,
+            return_destination, adults, cabin, provider)
 );
 
 CREATE TABLE IF NOT EXISTS quotes (
@@ -98,6 +101,16 @@ class Database:
         self._conn_key = f"conn_{uuid.uuid4().hex}"
         with self.connect() as conn:
             conn.executescript(SCHEMA)
+            self._migrate(conn)
+
+    @staticmethod
+    def _migrate(conn: sqlite3.Connection) -> None:
+        """Add columns introduced after a DB's creation. Cheap, and idempotent
+        via the column-existence check, so it runs on every open."""
+        existing = {row["name"] for row in conn.execute("PRAGMA table_info(routes)")}
+        for column in ("return_origin", "return_destination"):
+            if column not in existing:
+                conn.execute(f"ALTER TABLE routes ADD COLUMN {column} TEXT")
 
     def connect(self) -> sqlite3.Connection:
         key = self._conn_key
@@ -115,11 +128,13 @@ class Database:
 
     def add_route(self, route: Route) -> Route:
         sql = """
-        INSERT INTO routes (origin, destination, depart_date, return_date, adults, cabin,
-                            currency, max_stops, threshold, interval_minutes,
-                            depart_flex_days, return_flex_days, provider, enabled, label, created_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-        ON CONFLICT (origin, destination, depart_date, return_date, adults, cabin, provider)
+        INSERT INTO routes (origin, destination, depart_date, return_date, return_origin,
+                            return_destination, adults, cabin, currency, max_stops, threshold,
+                            interval_minutes, depart_flex_days, return_flex_days, provider,
+                            enabled, label, created_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+        ON CONFLICT (origin, destination, depart_date, return_date, return_origin,
+                     return_destination, adults, cabin, provider)
         DO UPDATE SET threshold=excluded.threshold,
                       interval_minutes=excluded.interval_minutes,
                       depart_flex_days=excluded.depart_flex_days,
@@ -135,6 +150,7 @@ class Database:
                 (
                     route.origin, route.destination, route.depart_date.isoformat(),
                     route.return_date.isoformat() if route.return_date else None,
+                    route.return_origin, route.return_destination,
                     route.adults, route.cabin, route.currency, route.max_stops,
                     route.threshold, route.interval_minutes, route.depart_flex_days,
                     route.return_flex_days, route.provider, int(route.enabled),
@@ -148,10 +164,12 @@ class Database:
     def find_route(self, route: Route) -> Route | None:
         row = self.connect().execute(
             """SELECT * FROM routes WHERE origin=? AND destination=? AND depart_date=?
-               AND return_date IS ? AND adults=? AND cabin=? AND provider=?""",
+               AND return_date IS ? AND return_origin IS ? AND return_destination IS ?
+               AND adults=? AND cabin=? AND provider=?""",
             (
                 route.origin, route.destination, route.depart_date.isoformat(),
                 route.return_date.isoformat() if route.return_date else None,
+                route.return_origin, route.return_destination,
                 route.adults, route.cabin, route.provider,
             ),
         ).fetchone()
@@ -314,6 +332,7 @@ def _row_to_route(row: sqlite3.Row) -> Route:
         id=row["id"], origin=row["origin"], destination=row["destination"],
         depart_date=date.fromisoformat(row["depart_date"]),
         return_date=date.fromisoformat(row["return_date"]) if row["return_date"] else None,
+        return_origin=row["return_origin"], return_destination=row["return_destination"],
         adults=row["adults"], cabin=row["cabin"], currency=row["currency"],
         max_stops=row["max_stops"], threshold=row["threshold"],
         interval_minutes=row["interval_minutes"], depart_flex_days=row["depart_flex_days"],

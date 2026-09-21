@@ -47,9 +47,12 @@ def cmd_add(args, db: Database, engine: Engine) -> int:
     origin, destination = parse_leg(args.route)
     if args.provider not in available():
         raise CliError(f"unknown provider {args.provider!r}; available: {', '.join(available())}")
+    if bool(args.return_from) != bool(args.ret) and args.return_from:
+        raise CliError("--return-from needs --return (an open jaw still has a return date)")
     route = Route(
         origin=origin, destination=destination, depart_date=args.depart,
-        return_date=args.ret, adults=args.adults, cabin=args.cabin,
+        return_date=args.ret, return_origin=args.return_from, return_destination=args.return_to,
+        adults=args.adults, cabin=args.cabin,
         currency=args.currency, max_stops=args.max_stops, threshold=args.threshold,
         interval_minutes=args.interval, depart_flex_days=args.flex_depart,
         return_flex_days=args.flex_return, provider=args.provider, label=args.label,
@@ -61,6 +64,10 @@ def cmd_add(args, db: Database, engine: Engine) -> int:
     print(f"tracking #{saved.id}  {saved.name}")
     print(f"  provider {saved.provider}   every {saved.interval_minutes} min"
           + (f"   target {money(saved.threshold, saved.currency)}" if saved.threshold else ""))
+    if saved.is_open_jaw:
+        print(f"  open jaw: out {saved.origin}→{saved.destination}, "
+              f"home {saved.return_origin}→{saved.return_destination}"
+              "  (priced as two one-way legs summed - see README)")
     if pairs > 1:
         print(f"  flexible dates: {pairs} date pairs searched per check")
     if args.check_now:
@@ -102,6 +109,7 @@ def cmd_import(args, db: Database, engine: Engine) -> int:
                 interval_minutes=int(raw.get("interval_minutes", 60)),
                 depart_flex_days=int(raw.get("depart_flex_days", 0)),
                 return_flex_days=int(raw.get("return_flex_days", 0)),
+                return_origin=raw.get("return_origin"), return_destination=raw.get("return_destination"),
                 provider=raw.get("provider", args.provider), label=raw.get("label"),
             )
         except (KeyError, ValueError) as exc:
@@ -111,6 +119,46 @@ def cmd_import(args, db: Database, engine: Engine) -> int:
         added += 1
         print(f"tracking #{saved.id}  {saved.name}")
     print(f"\n{added} route(s) now tracked.")
+    return 0
+
+
+def cmd_combo(args, db: Database, engine: Engine) -> int:
+    origin = args.origin.strip().upper()
+    destinations = [d.strip().upper() for d in args.to.split(",") if d.strip()]
+    if len(destinations) < 2 and not args.no_open_jaw:
+        raise CliError("need at least 2 destinations for open-jaw combos "
+                       "(or pass --no-open-jaw for a single round trip)")
+    if args.provider not in available():
+        raise CliError(f"unknown provider {args.provider!r}; available: {', '.join(available())}")
+
+    common = dict(
+        adults=args.adults, cabin=args.cabin, currency=args.currency, max_stops=args.max_stops,
+        threshold=args.threshold, interval_minutes=args.interval, provider=args.provider,
+    )
+    round_trips = 0
+    for dest in destinations:
+        route = Route(origin=origin, destination=dest, depart_date=args.depart,
+                      return_date=args.ret, **common)
+        saved = db.add_route(route)
+        round_trips += 1
+        print(f"tracking #{saved.id}  {saved.name}")
+
+    open_jaws = 0
+    if not args.no_open_jaw:
+        for out_dest in destinations:
+            for in_origin in destinations:
+                if in_origin == out_dest:
+                    continue
+                route = Route(origin=origin, destination=out_dest, return_origin=in_origin,
+                              return_destination=origin, depart_date=args.depart,
+                              return_date=args.ret, **common)
+                saved = db.add_route(route)
+                open_jaws += 1
+                print(f"tracking #{saved.id}  {saved.name}")
+
+    print(f"\n{round_trips + open_jaws} itinerary combination(s) now tracked "
+          f"({round_trips} round trip, {open_jaws} open-jaw) across {len(destinations)} "
+          f"destination(s). Run `flighttracker report` once there's history to see which wins.")
     return 0
 
 
@@ -334,6 +382,12 @@ def build_parser() -> argparse.ArgumentParser:
     a.add_argument("route", help="e.g. JFK-LHR")
     a.add_argument("--depart", required=True, help="YYYY-MM-DD")
     a.add_argument("--return", dest="ret", help="YYYY-MM-DD (omit for one-way)")
+    a.add_argument("--return-from", metavar="AIRPORT",
+                   help="open jaw: fly the inbound leg from a different airport than you "
+                        "arrived at, e.g. --return-from KIX when the outbound was to NRT")
+    a.add_argument("--return-to", metavar="AIRPORT",
+                   help="open jaw: land the inbound leg somewhere other than your original "
+                        "origin (rare - defaults to the outbound origin)")
     a.add_argument("--threshold", type=float, help="alert at or below this total price")
     a.add_argument("--interval", type=int, default=60, help="minutes between checks (default 60)")
     a.add_argument("--adults", type=int, default=1)
@@ -354,6 +408,32 @@ def build_parser() -> argparse.ArgumentParser:
     i.add_argument("--provider", default="mock", choices=available(),
                    help="fallback provider for rows that do not name one")
     i.set_defaults(func=cmd_import)
+
+    combo = sub.add_parser(
+        "combo",
+        help="track every round-trip AND open-jaw combination across a set of destinations",
+        description="For 'from Singapore, into Tokyo or Osaka, home from either' - tracks "
+                    "every symmetric round trip (SIN-NRT, SIN-KIX, ...) plus every open-jaw "
+                    "pairing (out NRT home KIX, out KIX home NRT, ...) so you can see which "
+                    "combination is actually cheapest, not just guess.",
+    )
+    combo.add_argument("origin", help="home airport, e.g. SIN")
+    combo.add_argument("--to", required=True, metavar="AIRPORTS",
+                       help="comma-separated destination airports, e.g. NRT,HND,KIX")
+    combo.add_argument("--depart", required=True, help="YYYY-MM-DD")
+    combo.add_argument("--return", dest="ret", required=True,
+                       help="YYYY-MM-DD (open-jaw combos need a return date)")
+    combo.add_argument("--threshold", type=float, help="applied to every combo tracked")
+    combo.add_argument("--interval", type=int, default=60)
+    combo.add_argument("--adults", type=int, default=1)
+    combo.add_argument("--cabin", default="ECONOMY",
+                       choices=["ECONOMY", "PREMIUM_ECONOMY", "BUSINESS", "FIRST"])
+    combo.add_argument("--currency", default="USD")
+    combo.add_argument("--max-stops", type=int, dest="max_stops")
+    combo.add_argument("--provider", default="mock", choices=available())
+    combo.add_argument("--no-open-jaw", action="store_true",
+                       help="only track the symmetric round trips, skip mixed in/out pairs")
+    combo.set_defaults(func=cmd_combo)
 
     sub.add_parser("list", help="show tracked routes").set_defaults(func=cmd_list)
 

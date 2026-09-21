@@ -18,6 +18,10 @@ $ flighttracker watch
 
 - **Tracks many routes at once.** Each route has its own polling interval; a
   worker pool sweeps everything that is due, so twelve routes are no harder than one.
+- **Open-jaw itineraries** — fly into one city, home from another (e.g. Singapore
+  → Tokyo, then Osaka → Singapore) — plus a `combo` command that tracks every
+  round-trip *and* open-jaw pairing across a set of destinations at once, so
+  "any of these cities, whichever way is cheapest" is one command, not N.
 - **Alerts on three rules** — your price threshold, a new all-time low, and a
   drop against the 7-day median — with a per-rule cooldown so you get told once,
   not forty times.
@@ -69,6 +73,38 @@ flighttracker report --html report.html && open report.html
     cheapest weekday  Wed    median USD 981.47  n=192
 ```
 
+## Open jaw and "any of these cities"
+
+A normal route is symmetric — you fly home the way you came. An **open-jaw**
+route doesn't: fly into one city, home from another.
+
+```bash
+flighttracker add SIN-NRT --depart 2026-11-06 --return 2026-11-15 --return-from KIX
+# out SIN -> NRT (Tokyo), home KIX -> SIN (Osaka)
+```
+
+`--return-from` sets the airport the inbound leg departs from; `--return-to`
+(rare) overrides where it lands, if not back at your original origin.
+
+If your real question is "into Tokyo *or* Osaka, home from *either* — whichever
+combination is cheapest," track every combination in one command with `combo`:
+
+```bash
+flighttracker combo SIN --to NRT,HND,KIX --depart 2026-11-06 --return 2026-11-15 --threshold 900
+```
+
+This tracks all 3 symmetric round trips **and** all 6 open-jaw pairings (out
+NRT home HND, out NRT home KIX, ... ) — 9 itineraries in total for 3
+destinations — so `report`'s overview table shows every combination side by
+side and you can see which one actually wins, rather than guessing. Pass
+`--no-open-jaw` to skip the mixed pairs and track only the symmetric round trips.
+
+**How open-jaw fares are priced:** no provider here returns a genuine combined
+open-jaw ticket price. Instead, each leg is priced as its own one-way fare and
+the two are summed. This is usually a close, slightly pessimistic estimate —
+real open-jaw tickets occasionally undercut the sum of two one-ways — so treat
+the number as an upper bound on what you'd actually pay, not a quote.
+
 ## Real prices
 
 `mock` is a simulation. For live fares, pick a provider and set its credentials:
@@ -105,7 +141,8 @@ For unattended operation use one of the files in `deploy/`:
 
 | Command | What it does |
 |---------|--------------|
-| `add ROUTE --depart … [--return …]` | start tracking a route |
+| `add ROUTE --depart … [--return …]` | start tracking a route (add `--return-from AIRPORT` for open jaw) |
+| `combo ORIGIN --to A,B,C --depart … --return …` | track every round-trip + open-jaw combo across destinations |
 | `import FILE` | bulk-add routes from JSON or CSV (see `examples/`) |
 | `list` | every tracked route with its latest price |
 | `check [--route N] [--force]` | poll now (one sweep) |
@@ -194,6 +231,13 @@ history, not about the market.
   make a booking decision from it.
 - Polling real providers aggressively will exhaust a free tier and may breach
   their terms. The default 60-minute interval is deliberate.
+- Open-jaw prices are two one-ways summed, not a real combined-ticket fare
+  (see above). It is an upper bound, not the true price floor.
+- **Upgrading from before open-jaw support:** the routes table gained a
+  uniqueness constraint that only a fresh table gets. If you tracked routes
+  with an older version, either keep using them as-is (open jaw just won't be
+  distinguishable from a symmetric round trip in the old DB) or delete
+  `~/.flighttracker/tracker.db` and re-add your routes.
 
 ## Development
 

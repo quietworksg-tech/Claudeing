@@ -106,36 +106,60 @@ class MockProvider(Provider):
         price *= 0.90 + 0.22 * _unit(key, "pair", depart, back)
         return round(price, 2)
 
-    def offers_at(self, route: Route, when: datetime) -> list[Offer]:
+    def _pair_offers(self, route: Route, when: datetime, depart: date, back: date | None) -> list[Offer]:
+        """A few ranked carrier offers for one concrete (route, when, date pair)."""
         key = self.route_key(route)
+        price = self.price_at(route, when, depart, back)
+        offers: list[Offer] = []
+        for rank in range(3):                                  # a few carriers per date pair
+            seed = _unit(key, depart, back, "carrier", rank)
+            stops = 0 if rank == 0 else (1 if seed < 0.7 else 2)
+            markup = 1.0 + rank * (0.04 + 0.10 * seed) - (0.06 if stops >= 1 else 0.0)
+            carrier = CARRIERS[int(seed * len(CARRIERS))]
+            offers.append(
+                Offer(
+                    price=round(price * markup, 2),
+                    currency=route.currency,
+                    depart_date=depart,
+                    return_date=back,
+                    carrier=carrier,
+                    stops=stops,
+                    duration_minutes=int(420 + 600 * _unit(key, "dur") + stops * 180),
+                    out_depart_time=f"{int(_unit(key, depart, 'oh', rank) * 24):02d}:"
+                                    f"{int(_unit(key, depart, 'om', rank) * 12) * 5:02d}",
+                    ret_depart_time=(
+                        f"{int(_unit(key, back, 'rh', rank) * 24):02d}:"
+                        f"{int(_unit(key, back, 'rm', rank) * 12) * 5:02d}"
+                        if back else None
+                    ),
+                    deep_link=None,
+                    raw={"simulated": True, "rank": rank},
+                )
+            )
+        return offers
+
+    def offers_at(self, route: Route, when: datetime) -> list[Offer]:
+        if route.is_open_jaw:
+            return self._open_jaw_offers_at(route, when)
         offers: list[Offer] = []
         for depart, back in route.date_pairs():
-            price = self.price_at(route, when, depart, back)
-            for rank in range(3):                              # a few carriers per date pair
-                seed = _unit(key, depart, back, "carrier", rank)
-                stops = 0 if rank == 0 else (1 if seed < 0.7 else 2)
-                markup = 1.0 + rank * (0.04 + 0.10 * seed) - (0.06 if stops >= 1 else 0.0)
-                carrier = CARRIERS[int(seed * len(CARRIERS))]
-                offers.append(
-                    Offer(
-                        price=round(price * markup, 2),
-                        currency=route.currency,
-                        depart_date=depart,
-                        return_date=back,
-                        carrier=carrier,
-                        stops=stops,
-                        duration_minutes=int(420 + 600 * _unit(key, "dur") + stops * 180),
-                        out_depart_time=f"{int(_unit(key, depart, 'oh', rank) * 24):02d}:"
-                                        f"{int(_unit(key, depart, 'om', rank) * 12) * 5:02d}",
-                        ret_depart_time=(
-                            f"{int(_unit(key, back, 'rh', rank) * 24):02d}:"
-                            f"{int(_unit(key, back, 'rm', rank) * 12) * 5:02d}"
-                            if back else None
-                        ),
-                        deep_link=None,
-                        raw={"simulated": True, "rank": rank},
-                    )
-                )
+            offers.extend(self._pair_offers(route, when, depart, back))
+        return offers
+
+    def _open_jaw_offers_at(self, route: Route, when: datetime) -> list[Offer]:
+        """Open-jaw: price each leg as its own one-way market and combine.
+        See `flighttracker.openjaw` for what that approximation means."""
+        from flighttracker.openjaw import combine_legs, leg_route
+
+        offers: list[Offer] = []
+        for depart, back in route.date_pairs():
+            if back is None:
+                continue
+            out_leg = leg_route(route, route.origin, route.destination)
+            in_leg = leg_route(route, route.return_origin, route.return_destination)
+            out_offers = self._pair_offers(out_leg, when, depart, None)
+            in_offers = self._pair_offers(in_leg, when, back, None)
+            offers.extend(combine_legs(out_offers, in_offers, depart, back))
         return offers
 
     def search(self, route: Route) -> list[Offer]:

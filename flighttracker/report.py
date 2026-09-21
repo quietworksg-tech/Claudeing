@@ -317,11 +317,18 @@ def _delta(value: float | None) -> str:
 def _route_section(summary: Summary, quotes: Sequence[Quote], index: int) -> str:
     s, ccy = summary, summary.currency
     parts = [f'<section class="card" id="route-{s.route.id}">']
-    itinerary = f"{s.route.origin} \u2192 {s.route.destination}  {s.route.depart_date}"
-    if s.route.return_date:
-        itinerary += f" \u2192 {s.route.return_date}"
+    if s.route.is_open_jaw:
+        itinerary = (f"out {s.route.origin}\u2192{s.route.destination} {s.route.depart_date}  "
+                    f"\u00b7  home {s.route.return_origin}\u2192{s.route.return_destination} "
+                    f"{s.route.return_date}")
+    else:
+        itinerary = f"{s.route.origin} \u2192 {s.route.destination}  {s.route.depart_date}"
+        if s.route.return_date:
+            itinerary += f" \u2192 {s.route.return_date}"
     meta = [itinerary, s.route.provider, s.route.cabin.title(), f"{s.route.adults} pax",
             f"every {s.route.interval_minutes} min"]
+    if s.route.is_open_jaw:
+        meta.append("open jaw \u2014 priced as two one-ways summed")
     if s.route.depart_flex_days or s.route.return_flex_days:
         meta.append(f"flex ±{s.route.depart_flex_days}/{s.route.return_flex_days}d")
     parts.append(f'<h2>{esc(s.route.name)}</h2>')
